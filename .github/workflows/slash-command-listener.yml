@@ -12,3 +12,5 @@ jobs:
           token: ${{ secrets.PAT }}
           commands: deploy
           dispatch-type: workflow
+          reaction: rocket
+          permission: admin

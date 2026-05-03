@@ -273,7 +273,9 @@ export class ImportManager {
     );
 
     if (!resolvedOriginalPath) {
-      throw new Error("Could not resolve original path for import");
+      throw new Error(
+        "Source path could not be resolved — the download may no longer be tracked by the download client. Please specify the source path manually."
+      );
     }
 
     const game = await this.storage.getGame(download.gameId);

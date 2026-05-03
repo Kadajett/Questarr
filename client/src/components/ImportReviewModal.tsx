@@ -47,16 +47,19 @@ export default function ImportReviewModal({
 
   // State
   const [strategy] = useState<"pc">("pc");
+  const [sourcePath, setSourcePath] = useState("");
   const [destinationPath, setDestinationPath] = useState("");
   const [transferMode, setTransferMode] = useState<"move" | "copy" | "hardlink" | "symlink">(
     "move"
   );
   const [unpackArchive, setUnpackArchive] = useState(false);
-  const [isFileBrowserOpen, setIsFileBrowserOpen] = useState(false);
+  const [isSourceBrowserOpen, setIsSourceBrowserOpen] = useState(false);
+  const [isDestBrowserOpen, setIsDestBrowserOpen] = useState(false);
 
   // Reset state on open, defaulting transfer mode to the user's configured setting
   useEffect(() => {
     if (open) {
+      setSourcePath("");
       setDestinationPath(importConfig?.libraryRoot ?? "");
       setTransferMode((importConfig?.transferMode as typeof transferMode) ?? "move");
       setUnpackArchive(false);
@@ -68,7 +71,7 @@ export default function ImportReviewModal({
       await apiRequest("POST", `/api/imports/${downloadId}/confirm`, {
         strategy,
         proposedPath: destinationPath,
-        originalPath: "", // Backend will resolve it
+        ...(sourcePath ? { originalPath: sourcePath } : {}),
         transferMode,
         unpack: unpackArchive,
       });
@@ -112,6 +115,32 @@ export default function ImportReviewModal({
           </DialogHeader>
 
           <div className="space-y-4 py-4">
+            {/* Source Path */}
+            <div className="space-y-2">
+              <Label htmlFor="import-review-source-path">
+                Source Path{" "}
+                <span className="text-xs text-muted-foreground font-normal">
+                  (optional — auto-resolved from download client)
+                </span>
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  id="import-review-source-path"
+                  value={sourcePath}
+                  onChange={(e) => setSourcePath(e.target.value)}
+                  placeholder="Auto-resolved from download client"
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  aria-label="Browse source directories"
+                  onClick={() => setIsSourceBrowserOpen(true)}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
             {/* Destination Path */}
             <div className="space-y-2">
               <Label htmlFor="import-review-destination-path">Destination Path</Label>
@@ -126,7 +155,7 @@ export default function ImportReviewModal({
                   variant="outline"
                   size="icon"
                   aria-label="Browse destination directories"
-                  onClick={() => setIsFileBrowserOpen(true)}
+                  onClick={() => setIsDestBrowserOpen(true)}
                 >
                   <FolderOpen className="h-4 w-4" />
                 </Button>
@@ -176,8 +205,16 @@ export default function ImportReviewModal({
         </DialogContent>
       </Dialog>
       <FileBrowser
-        open={isFileBrowserOpen}
-        onOpenChange={setIsFileBrowserOpen}
+        open={isSourceBrowserOpen}
+        onOpenChange={setIsSourceBrowserOpen}
+        onSelect={(path) => setSourcePath(path)}
+        initialPath={sourcePath || "/"}
+        title="Select Source"
+        root="/"
+      />
+      <FileBrowser
+        open={isDestBrowserOpen}
+        onOpenChange={setIsDestBrowserOpen}
         onSelect={(path) => setDestinationPath(path)}
         initialPath={destinationPath || importConfig?.libraryRoot || "/"}
         title="Select Destination"

@@ -73,6 +73,11 @@ export function FileBrowser({
             // fallback also failed — fall through to error state
           }
         }
+        // Path doesn't exist on this machine; reset to root rather than showing an error
+        if (attemptFallback && p !== "/") {
+          setCurrentPath("/");
+          return;
+        }
         setError("Failed to load directory");
       } finally {
         setLoading(false);

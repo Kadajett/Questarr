@@ -7,7 +7,7 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - uses: peter-evans/slash-command-dispatch@e8674b075228eee787fea43ef493e45ece1004c9 # v5
+      - uses: peter-evans/slash-command-dispatch@9bdcd7914ec1b75590b790b844aa3b8eee7c683a # v5
         with:
           token: ${{ secrets.PAT }}
           commands: deploy

@@ -449,6 +449,7 @@ importRouter.post("/:id/confirm", async (req, res) => {
     const schema = z.object({
       strategy: z.enum(["pc"] as const),
       proposedPath: z.string(),
+      originalPath: z.string().optional(),
       transferMode: z.enum(IMPORT_TRANSFER_MODES).optional(),
       unpack: z.boolean().optional(),
     });
@@ -462,7 +463,7 @@ importRouter.post("/:id/confirm", async (req, res) => {
       id,
       {
         strategy: body.strategy,
-        originalPath: "",
+        originalPath: body.originalPath ?? "",
         proposedPath: safeProposedPath,
         needsReview: false,
         reviewReason: "Manual Confirmation",
@@ -481,7 +482,7 @@ importRouter.post("/:id/confirm", async (req, res) => {
       if (
         error.message === "Invalid proposed path" ||
         error.message === "Confirmation requires a plan" ||
-        error.message === "Could not resolve original path for import"
+        error.message.startsWith("Source path could not be resolved")
       ) {
         return res.status(400).json({ error: error.message });
       }

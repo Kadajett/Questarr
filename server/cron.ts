@@ -3,7 +3,7 @@ import { igdbClient, IGDB_EARLY_ACCESS_STATUS } from "./igdb.js";
 import { igdbLogger } from "./logger.js";
 import { notifyUser } from "./socket.js";
 import { DownloaderManager } from "./downloaders.js";
-import { searchAllIndexers, filterBlacklistedReleases } from "./search.js";
+import { searchAllIndexers, filterBlacklistedReleases, type SearchItem } from "./search.js";
 import { xrelClient, DEFAULT_XREL_BASE } from "./xrel.js";
 import { steamService } from "./steam.js";
 import { downloadRulesSchema, type Game, type InsertNotification } from "../shared/schema.js";
@@ -38,8 +38,8 @@ interface AutoSearchRules {
 }
 
 interface AutoSearchCategorizedItems {
-  mainItems: Awaited<ReturnType<typeof searchAllIndexers>>["items"];
-  updateItems: Awaited<ReturnType<typeof searchAllIndexers>>["items"];
+  mainItems: SearchItem[];
+  updateItems: SearchItem[];
 }
 
 function getAutoSearchRules(downloadRules: string | null): AutoSearchRules {
@@ -59,7 +59,7 @@ function getAutoSearchRules(downloadRules: string | null): AutoSearchRules {
 }
 
 function categorizeSearchItems(
-  items: Awaited<ReturnType<typeof searchAllIndexers>>["items"],
+  items: SearchItem[],
   rules: AutoSearchRules
 ): AutoSearchCategorizedItems {
   const sortedItems = items
@@ -98,10 +98,10 @@ function categorizeSearchItems(
 }
 
 function applyPreferredGroupsFilter(
-  items: Awaited<ReturnType<typeof searchAllIndexers>>["items"],
+  items: SearchItem[],
   preferredGroups: string[],
   strict: boolean
-): Awaited<ReturnType<typeof searchAllIndexers>>["items"] {
+): SearchItem[] {
   if (preferredGroups.length === 0) return items;
   const filtered = items.filter(
     (item) =>
@@ -119,10 +119,10 @@ function applyPreferredGroupsFilter(
  * from the highest-priority indexer (lowest priority number) is kept.
  */
 function deduplicateByTitle(
-  items: Awaited<ReturnType<typeof searchAllIndexers>>["items"],
+  items: SearchItem[],
   indexerPriorityMap: Map<string, number>
-): Awaited<ReturnType<typeof searchAllIndexers>>["items"] {
-  const seen = new Map<string, Awaited<ReturnType<typeof searchAllIndexers>>["items"][number]>();
+): SearchItem[] {
+  const seen = new Map<string, SearchItem>();
   for (const item of items) {
     const key = normalizeTitle(item.title);
     const existing = seen.get(key);
@@ -146,9 +146,9 @@ function deduplicateByTitle(
  * Returns the input unchanged when no preferred platform is configured.
  */
 function applyPreferredPlatformFilter(
-  items: Awaited<ReturnType<typeof searchAllIndexers>>["items"],
+  items: SearchItem[],
   preferredPlatform: string | null | undefined
-): Awaited<ReturnType<typeof searchAllIndexers>>["items"] {
+): SearchItem[] {
   if (!preferredPlatform) return items;
   return items.filter((item) => {
     const { platform } = parseReleaseMetadata(item.title);

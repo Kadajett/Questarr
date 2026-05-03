@@ -1041,5 +1041,39 @@ describe("Cron - checkAutoSearch", () => {
         expect.objectContaining({ title: "Multiple Results Found" })
       );
     });
+
+    it("should treat titles as duplicates despite punctuation or casing differences", async () => {
+      // "Test Game SKIDROW" and "Test.Game.SKIDROW" normalise to the same key → de-duplicated to 1.
+      const settings = { ...baseSettings, autoDownloadEnabled: true };
+      const mockDownloader = { id: "dl-1", name: "qBittorrent", type: "torrent", enabled: true };
+
+      mockGetUserSettings.mockResolvedValue(settings);
+      mockGetEnabledDownloaders.mockResolvedValue([mockDownloader]);
+      mockAddDownloadWithFallback.mockResolvedValue({
+        success: true,
+        id: "hash-abc",
+        downloaderId: "dl-1",
+      });
+      mockGetEnabledIndexers.mockResolvedValue([
+        { id: "indexer-a", priority: 1 },
+        { id: "indexer-b", priority: 2 },
+      ]);
+      mockSearchAllIndexers.mockResolvedValue({
+        items: [
+          ITEM_INDEXER_A, // "Test Game SKIDROW"
+          {
+            ...ITEM_INDEXER_B,
+            title: "Test.Game.SKIDROW", // same release, dots instead of spaces
+          },
+        ],
+        errors: [],
+        total: 2,
+      });
+
+      await checkAutoSearch();
+
+      // After normalisation both titles match → de-duplicated to 1 → auto-download fires.
+      expect(mockAddDownloadWithFallback).toHaveBeenCalledTimes(1);
+    });
   });
 });

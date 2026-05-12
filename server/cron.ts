@@ -1,6 +1,9 @@
 import { storage } from "./storage.js";
 import { igdbClient, IGDB_EARLY_ACCESS_STATUS } from "./igdb.js";
 import { rankReleases } from "./llm-rank.js";
+import { transferToRomm } from "./romm-transfer.js";
+import { syncFromRomm } from "./romm-sync.js";
+import { getRommConfig } from "./romm.js";
 import { igdbLogger } from "./logger.js";
 import { notifyUser } from "./socket.js";
 import { DownloaderManager } from "./downloaders.js";
@@ -28,6 +31,7 @@ const downloadMissCount = new Map<string, number>();
 const DOWNLOAD_MISS_THRESHOLD = 3;
 const AUTO_SEARCH_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const XREL_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours (xREL search rate limit: 2/5s)
+const ROMM_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours — pull RomM library and reconcile owned status
 const OWNED_STATUSES = new Set(["owned", "completed", "downloading"]);
 
 type DownloadSortBy = "seeders" | "date" | "size";
@@ -227,6 +231,14 @@ export function startCronJobs() {
   setInterval(() => {
     checkAutoSearch().catch((err) => igdbLogger.error({ err }, "Error in checkAutoSearch"));
   }, AUTO_SEARCH_CHECK_INTERVAL_MS);
+
+  // Retro fork: periodic RomM library reconcile. Runs only when romm.enabled
+  // is true; otherwise the function short-circuits cheaply.
+  setInterval(() => {
+    runRommSyncForAllUsers().catch((err) =>
+      igdbLogger.error({ err }, "Error in periodic RomM sync")
+    );
+  }, ROMM_SYNC_INTERVAL_MS);
 
   setInterval(() => {
     checkXrelReleases().catch((err) => igdbLogger.error({ err }, "Error in checkXrelReleases"));
@@ -507,6 +519,18 @@ export async function checkDownloadStatus() {
             // Fetch game title for notification
             const game = await storage.getGame(download.gameId);
             const gameTitle = game ? game.title : download.downloadTitle;
+
+            // Retro fork: file-transfer hand-off to RomM. Best-effort —
+            // never throws out of the cron loop. Skipped silently when
+            // romm.enabled or romm.transferEnabled is false.
+            if (game) {
+              transferToRomm(game, [download.downloadTitle]).catch((err) =>
+                igdbLogger.warn(
+                  { gameId: game.id, err: err instanceof Error ? err.message : String(err) },
+                  "RomM transfer threw"
+                )
+              );
+            }
 
             // Send notification
             const message = `Download finished for ${gameTitle}`;
@@ -1034,6 +1058,24 @@ export async function checkXrelReleases() {
     }
   } catch (error) {
     igdbLogger.error({ error }, "Error in checkXrelReleases");
+  }
+}
+
+// Retro fork: periodic RomM library reconcile across all users. Each user
+// gets their own sync pass since the games table is per-user.
+export async function runRommSyncForAllUsers(): Promise<void> {
+  const cfg = await getRommConfig();
+  if (!cfg.enabled) return;
+  const users = await storage.getAllUsers();
+  for (const u of users) {
+    try {
+      await syncFromRomm(u.id, { createMissing: false });
+    } catch (err) {
+      igdbLogger.warn(
+        { userId: u.id, err: err instanceof Error ? err.message : String(err) },
+        "RomM sync failed for user"
+      );
+    }
   }
 }
 

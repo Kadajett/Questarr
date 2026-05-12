@@ -1194,6 +1194,98 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // Retro fork: RomM integration — config + on-demand sync + on-demand
+  // file transfer.
+  app.get("/api/settings/romm", async (_req: Request, res: Response) => {
+    try {
+      const { getRommConfig } = await import("./romm.js");
+      const cfg = await getRommConfig();
+      // Don't leak the password to the client.
+      res.json({ ...cfg, password: cfg.password ? "<set>" : "" });
+    } catch (error) {
+      routesLogger.error({ error }, "error reading romm settings");
+      res.status(500).json({ error: "Failed to read RomM settings" });
+    }
+  });
+
+  app.patch("/api/settings/romm", sensitiveEndpointLimiter, async (req: Request, res: Response) => {
+    try {
+      const { setRommConfig } = await import("./romm.js");
+      const body = req.body ?? {};
+      // password may come in as "<set>" placeholder from the client — ignore.
+      if (body.password === "<set>") delete body.password;
+      const cfg = await setRommConfig(body);
+      res.json({ ...cfg, password: cfg.password ? "<set>" : "" });
+    } catch (error) {
+      routesLogger.error({ error }, "error writing romm settings");
+      res.status(500).json({ error: "Failed to update RomM settings" });
+    }
+  });
+
+  // POST /api/romm/test  — verify creds + connectivity without persisting state.
+  app.post("/api/romm/test", sensitiveEndpointLimiter, async (_req: Request, res: Response) => {
+    try {
+      const { rommClient, getRommConfig } = await import("./romm.js");
+      const cfg = await getRommConfig();
+      if (!cfg.url || !cfg.username) {
+        return res.status(400).json({ ok: false, error: "RomM URL/username not configured" });
+      }
+      const platforms = await rommClient.listPlatforms(cfg);
+      const sample = await rommClient.listRoms(cfg, { limit: 1 });
+      res.json({
+        ok: platforms.length > 0,
+        platformCount: platforms.length,
+        romCount: sample.total ?? 0,
+      });
+    } catch (error) {
+      routesLogger.error({ error }, "RomM /api/romm/test failed");
+      res.status(500).json({ ok: false, error: "RomM test failed" });
+    }
+  });
+
+  // POST /api/romm/sync?createMissing=true|false  — pull RomM library and
+  // reconcile against this user's Questarr library.
+  app.post("/api/romm/sync", sensitiveEndpointLimiter, async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const createMissing = String(req.query.createMissing ?? "false") === "true";
+      const { syncFromRomm } = await import("./romm-sync.js");
+      const summary = await syncFromRomm(userId, { createMissing });
+      res.json(summary);
+    } catch (error) {
+      routesLogger.error({ error }, "RomM sync failed");
+      res.status(500).json({ error: "RomM sync failed" });
+    }
+  });
+
+  // POST /api/games/:id/transfer-to-romm — manually push a single game's
+  // completed-download files into RomM. Useful when an old download was
+  // queued before RomM was wired up.
+  app.post(
+    "/api/games/:id/transfer-to-romm",
+    sensitiveEndpointLimiter,
+    sanitizeGameId,
+    validateRequest,
+    async (req: Request, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const { id } = req.params;
+        const game = await storage.getGame(id);
+        if (!game || game.userId !== userId) {
+          return res.status(404).json({ error: "Game not found" });
+        }
+        const downloads = await storage.getDownloadsByGameId(id);
+        const titles = downloads.map((d) => d.downloadTitle);
+        const { transferToRomm } = await import("./romm-transfer.js");
+        const result = await transferToRomm(game, titles);
+        res.json(result);
+      } catch (error) {
+        routesLogger.error({ error }, "RomM transfer failed");
+        res.status(500).json({ error: "RomM transfer failed" });
+      }
+    }
+  );
+
   // Retro fork: enumerate the platforms the fork knows about (canonical name +
   // IGDB id). The frontend uses this to populate the "platform" dropdown in
   // the add-game modal and library filter.

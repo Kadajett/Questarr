@@ -39,6 +39,12 @@ export const userSettings = sqliteTable("user_settings", {
     .notNull()
     .default(false),
   preferredPlatform: text("preferred_platform"),
+  // Retro fork: per-account opt-in for the LLM-backed release ranker.
+  // Defaults off; the global env kill-switch (LLM_AI_RANK_ENABLED) must
+  // also be true for the ranker to actually run.
+  aiRankReleasesEnabled: integer("ai_rank_releases_enabled", { mode: "boolean" })
+    .notNull()
+    .default(false),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).default(
     sql`(strftime('%s', 'now') * 1000)`
   ),

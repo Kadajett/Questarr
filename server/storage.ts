@@ -905,6 +905,7 @@ export class MemStorage implements IStorage {
       preferredReleaseGroups: insertSettings.preferredReleaseGroups ?? null,
       filterByPreferredGroups: insertSettings.filterByPreferredGroups ?? false,
       preferredPlatform: insertSettings.preferredPlatform ?? null,
+      aiRankReleasesEnabled: insertSettings.aiRankReleasesEnabled ?? false,
       updatedAt: new Date(),
     };
     this.userSettings.set(id, settings);

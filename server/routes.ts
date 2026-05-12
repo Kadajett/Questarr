@@ -1119,6 +1119,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // Retro fork: on-demand LLM ranking of indexer search results for a game.
+  // POST /api/games/:id/rank-releases  body: { items: RankableRelease[] }
+  // Returns: { index, reason, model } | { error }
+  // Useful for the "Pick best with AI" button in the per-game results modal.
+  app.post(
+    "/api/games/:id/rank-releases",
+    sanitizeGameId,
+    validateRequest,
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const userId = req.user!.id;
+        const items = Array.isArray(req.body?.items) ? req.body.items : null;
+        if (!items) {
+          return res.status(400).json({ error: "Body must include items array" });
+        }
+        const game = await storage.getGame(id);
+        if (!game || game.userId !== userId) {
+          return res.status(404).json({ error: "Game not found" });
+        }
+        const { rankReleases } = await import("./llm-rank.js");
+        const ranked = await rankReleases(game, items);
+        if (!ranked) {
+          return res.status(503).json({ error: "LLM ranker unavailable or returned no answer" });
+        }
+        res.json(ranked);
+      } catch (error) {
+        routesLogger.error({ error }, "error in rank-releases");
+        res.status(500).json({ error: "Failed to rank releases" });
+      }
+    }
+  );
+
   // Retro fork: enumerate the platforms the fork knows about (canonical name +
   // IGDB id). The frontend uses this to populate the "platform" dropdown in
   // the add-game modal and library filter.

@@ -27,6 +27,18 @@ const envSchema = z.object({
   IGDB_CLIENT_ID: z.string().optional(),
   IGDB_CLIENT_SECRET: z.string().optional(),
 
+  // Retro fork: optional LLM-backed release ranker. When enabled and
+  // configured, the auto-search loop hands the indexer results for each
+  // game to the LLM and asks it to pick the best download. Default OFF;
+  // any failure path silently falls back to the existing first-match logic.
+  LLM_OPENROUTER_API_KEY: z.string().optional(),
+  LLM_OPENROUTER_BASE_URL: z.string().url().optional().default("https://openrouter.ai/api/v1"),
+  LLM_MODEL: z.string().optional().default("google/gemini-2.5-flash"),
+  LLM_AI_RANK_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
+
   // Server configuration
   PORT: z
     .string()
@@ -85,6 +97,14 @@ export const config = {
     clientId: env.IGDB_CLIENT_ID,
     clientSecret: env.IGDB_CLIENT_SECRET,
     isConfigured: !!(env.IGDB_CLIENT_ID && env.IGDB_CLIENT_SECRET),
+  },
+  llm: {
+    apiKey: env.LLM_OPENROUTER_API_KEY,
+    baseUrl: env.LLM_OPENROUTER_BASE_URL,
+    model: env.LLM_MODEL,
+    // Global kill-switch. Even if a user has the per-account toggle on,
+    // the LLM ranker is skipped unless this is true AND apiKey is set.
+    enabled: !!env.LLM_AI_RANK_ENABLED && !!env.LLM_OPENROUTER_API_KEY,
   },
   server: {
     port: env.PORT,

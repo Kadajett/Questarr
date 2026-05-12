@@ -1,0 +1,1 @@
+ALTER TABLE `user_settings` ADD `ai_rank_releases_enabled` integer DEFAULT false NOT NULL;

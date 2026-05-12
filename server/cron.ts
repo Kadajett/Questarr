@@ -1,5 +1,6 @@
 import { storage } from "./storage.js";
 import { igdbClient, IGDB_EARLY_ACCESS_STATUS } from "./igdb.js";
+import { rankReleases } from "./llm-rank.js";
 import { igdbLogger } from "./logger.js";
 import { notifyUser } from "./socket.js";
 import { DownloaderManager } from "./downloaders.js";
@@ -748,7 +749,7 @@ export async function checkAutoSearch() {
               searchResult.mainItems,
               game.targetPlatform ?? fallbackPlatform
             );
-            const mainItems = applyPreferredGroupsFilter(platformFilteredMain, preferredGroups);
+            let mainItems = applyPreferredGroupsFilter(platformFilteredMain, preferredGroups);
 
             // Handle main items
             if (mainItems.length === 0) {
@@ -760,6 +761,36 @@ export async function checkAutoSearch() {
             gamesWithResults++;
             // Always mark as available when filtered results exist
             await storage.updateGameSearchResultsAvailable(game.id, true);
+
+            // Retro fork: optional LLM auditor. If enabled and ≥2 candidates,
+            // ask the LLM to pick the best release; on success, collapse the
+            // list to that single item so the existing single-result auto-
+            // download / notify path runs. If the LLM is disabled or fails,
+            // fall through with the original list and the existing
+            // "multiple results, please review" notification.
+            if (mainItems.length > 1 && settings.aiRankReleasesEnabled) {
+              try {
+                const ranked = await rankReleases(game, mainItems);
+                if (ranked) {
+                  igdbLogger.info(
+                    {
+                      gameTitle: game.title,
+                      candidates: mainItems.length,
+                      pick: mainItems[ranked.index].title,
+                      reason: ranked.reason,
+                      model: ranked.model,
+                    },
+                    "LLM picked best release"
+                  );
+                  mainItems = [mainItems[ranked.index]];
+                }
+              } catch (err) {
+                igdbLogger.warn(
+                  { gameTitle: game.title, err: err instanceof Error ? err.message : String(err) },
+                  "LLM ranker threw; falling back to multi-result review"
+                );
+              }
+            }
 
             if (mainItems.length === 1) {
               // Single result found

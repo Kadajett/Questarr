@@ -1273,6 +1273,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // POST /api/romm/rename-library?dryRun=true|false
+  // Walk the configured RomM library and rename any rom files whose basename
+  // would change under cleanRomFilename (strips Cocorico romset prefixes,
+  // hack/translation tags, etc.) so RomM's metadata scrapers can match them.
+  // Triggers a per-platform RomM scan when files actually move.
+  app.post(
+    "/api/romm/rename-library",
+    sensitiveEndpointLimiter,
+    async (req: Request, res: Response) => {
+      try {
+        const dryRun = String(req.query.dryRun ?? "false") === "true";
+        const { renameRommLibraryFiles } = await import("./romm-transfer.js");
+        const result = await renameRommLibraryFiles({ dryRun });
+        res.json(result);
+      } catch (error) {
+        routesLogger.error({ error }, "RomM library rename failed");
+        res.status(500).json({ error: "RomM library rename failed" });
+      }
+    }
+  );
+
   // POST /api/romm/sync?createMissing=true|false  — pull RomM library and
   // reconcile against this user's Questarr library.
   app.post("/api/romm/sync", sensitiveEndpointLimiter, async (req: Request, res: Response) => {

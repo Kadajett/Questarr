@@ -1196,12 +1196,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Retro fork: RomM integration — config + on-demand sync + on-demand
   // file transfer.
+  //
+  // Auth model: API token only. The `password` field on PATCH is one-shot —
+  // it's used to mint an `rmm_*` token via RomM's POST /api/client-tokens
+  // and then discarded. Passwords are NEVER persisted to system_config.
   app.get("/api/settings/romm", async (_req: Request, res: Response) => {
     try {
       const { getRommConfig } = await import("./romm.js");
       const cfg = await getRommConfig();
-      // Don't leak the password to the client.
-      res.json({ ...cfg, password: cfg.password ? "<set>" : "" });
+      res.json({ ...cfg, apiToken: cfg.apiToken ? "<set>" : "" });
     } catch (error) {
       routesLogger.error({ error }, "error reading romm settings");
       res.status(500).json({ error: "Failed to read RomM settings" });
@@ -1210,25 +1213,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/settings/romm", sensitiveEndpointLimiter, async (req: Request, res: Response) => {
     try {
-      const { setRommConfig } = await import("./romm.js");
-      const body = req.body ?? {};
-      // password may come in as "<set>" placeholder from the client — ignore.
-      if (body.password === "<set>") delete body.password;
+      const { setRommConfig, mintApiTokenFromUserPass, getRommConfig } = await import("./romm.js");
+      const body: Record<string, unknown> = { ...(req.body ?? {}) };
+
+      // <set> placeholder from the client = leave existing value alone.
+      if (body.apiToken === "<set>") delete body.apiToken;
+
+      // Pull the password aside so it never reaches setRommConfig().
+      const password = typeof body.password === "string" ? body.password : "";
+      delete body.password;
+
+      // If a password came in but no token, mint one and persist only the token.
+      if (password && !body.apiToken) {
+        const existing = await getRommConfig();
+        const url = (typeof body.url === "string" && body.url) || existing.url || "";
+        const username =
+          (typeof body.username === "string" && body.username) || existing.username || "";
+        if (!url || !username) {
+          return res.status(400).json({
+            error:
+              "Cannot mint API token — both url and username are required when sending a password",
+          });
+        }
+        const minted = await mintApiTokenFromUserPass(url, username, password);
+        if (!minted) {
+          return res.status(401).json({
+            error: "RomM rejected username+password, or token mint failed. Check RomM logs.",
+          });
+        }
+        body.apiToken = minted;
+      }
+
       const cfg = await setRommConfig(body);
-      res.json({ ...cfg, password: cfg.password ? "<set>" : "" });
+      res.json({ ...cfg, apiToken: cfg.apiToken ? "<set>" : "" });
     } catch (error) {
       routesLogger.error({ error }, "error writing romm settings");
       res.status(500).json({ error: "Failed to update RomM settings" });
     }
   });
 
-  // POST /api/romm/test  — verify creds + connectivity without persisting state.
+  // POST /api/romm/test  — verify the saved token actually works.
   app.post("/api/romm/test", sensitiveEndpointLimiter, async (_req: Request, res: Response) => {
     try {
       const { rommClient, getRommConfig } = await import("./romm.js");
       const cfg = await getRommConfig();
-      if (!cfg.url || !cfg.username) {
-        return res.status(400).json({ ok: false, error: "RomM URL/username not configured" });
+      if (!cfg.url || !cfg.apiToken) {
+        return res.status(400).json({ ok: false, error: "RomM URL/apiToken not configured" });
       }
       const platforms = await rommClient.listPlatforms(cfg);
       const sample = await rommClient.listRoms(cfg, { limit: 1 });

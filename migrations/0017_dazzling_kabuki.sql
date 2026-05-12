@@ -1,0 +1,1 @@
+ALTER TABLE `game_downloads` ADD `miss_count` integer DEFAULT 0 NOT NULL;

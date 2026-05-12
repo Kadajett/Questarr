@@ -126,6 +126,12 @@ export interface IStorage {
     gameId: string
   ): Promise<(GameDownload & { downloaderName: string | null })[]>;
   updateGameDownloadStatus(id: string, status: string): Promise<void>;
+  // Retro fork: persistent miss counter for the cron's
+  // checkDownloadStatus loop. Survives restarts so a chronically-missing
+  // download eventually trips the reset-to-wanted timeout instead of
+  // being reset to 0 every time the pod recycles.
+  incrementGameDownloadMissCount(id: string): Promise<number>;
+  resetGameDownloadMissCount(id: string): Promise<void>;
   addGameDownload(gameDownload: InsertGameDownload): Promise<GameDownload>;
   removeGameDownload(id: string, gameId: string): Promise<boolean>;
   getDownloadSummaryByGame(userId: string): Promise<Record<string, DownloadSummary>>;
@@ -668,6 +674,19 @@ export class MemStorage implements IStorage {
     }
   }
 
+  async incrementGameDownloadMissCount(id: string): Promise<number> {
+    const gd = this.gameDownloads.get(id);
+    if (!gd) return 0;
+    const next = (gd.missCount ?? 0) + 1;
+    this.gameDownloads.set(id, { ...gd, missCount: next });
+    return next;
+  }
+
+  async resetGameDownloadMissCount(id: string): Promise<void> {
+    const gd = this.gameDownloads.get(id);
+    if (gd) this.gameDownloads.set(id, { ...gd, missCount: 0 });
+  }
+
   async addGameDownload(insertGameDownload: InsertGameDownload): Promise<GameDownload> {
     const id = randomUUID();
     const gameDownload: GameDownload = {
@@ -676,6 +695,7 @@ export class MemStorage implements IStorage {
       status: insertGameDownload.status || "downloading",
       downloadType: insertGameDownload.downloadType || "torrent",
       fileSize: insertGameDownload.fileSize ?? null,
+      missCount: insertGameDownload.missCount ?? 0,
       addedAt: new Date(),
       completedAt: null,
     };
@@ -1479,6 +1499,7 @@ export class DatabaseStorage implements IStorage {
         downloadTitle: gameDownloads.downloadTitle,
         status: gameDownloads.status,
         fileSize: gameDownloads.fileSize,
+        missCount: gameDownloads.missCount,
         addedAt: gameDownloads.addedAt,
         completedAt: gameDownloads.completedAt,
         downloaderName: downloaders.name,
@@ -1496,6 +1517,19 @@ export class DatabaseStorage implements IStorage {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .set({ status: status as any, completedAt: status === "completed" ? new Date() : null })
       .where(eq(gameDownloads.id, id));
+  }
+
+  async incrementGameDownloadMissCount(id: string): Promise<number> {
+    const [row] = await db
+      .update(gameDownloads)
+      .set({ missCount: sql`${gameDownloads.missCount} + 1` })
+      .where(eq(gameDownloads.id, id))
+      .returning({ missCount: gameDownloads.missCount });
+    return row?.missCount ?? 0;
+  }
+
+  async resetGameDownloadMissCount(id: string): Promise<void> {
+    await db.update(gameDownloads).set({ missCount: 0 }).where(eq(gameDownloads.id, id));
   }
 
   async addGameDownload(insertGameDownload: InsertGameDownload): Promise<GameDownload> {

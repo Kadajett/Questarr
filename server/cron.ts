@@ -25,9 +25,10 @@ const DELAY_THRESHOLD_DAYS = 7;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DOWNLOAD_CHECK_INTERVAL_MS = 60 * 1000; // 1 minute
 
-// Track consecutive "not found" counts per download to avoid prematurely marking
-// downloads as owned during the brief SABnzbd queue→history transition window.
-const downloadMissCount = new Map<string, number>();
+// Retro fork: miss counter is persisted in game_downloads.miss_count so it
+// survives Questarr restarts. The previous in-memory Map reset to 0 on every
+// pod recycle, masking chronically-missing downloads from the timeout. The
+// threshold below is the same; only the storage backing changed.
 const DOWNLOAD_MISS_THRESHOLD = 3;
 const AUTO_SEARCH_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const XREL_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours (xREL search rate limit: 2/5s)
@@ -213,6 +214,13 @@ export function startCronJobs() {
   // Run immediately on startup (or after a slight delay to ensure DB is ready)
   setTimeout(() => {
     igdbLogger.info("Running initial cron job checks...");
+    // Retro fork: reconcile in-flight downloads against the downloader's
+    // queue+history first. Without this, a download that completed during
+    // a Questarr restart sits as 'downloading' until the regular per-minute
+    // tick eventually times it out via miss-count threshold (3 minutes).
+    reconcileDownloadsAtStartup().catch((err) =>
+      igdbLogger.error({ err }, "Error in reconcileDownloadsAtStartup")
+    );
     checkGameUpdates().catch((err) => igdbLogger.error({ err }, "Error in checkGameUpdates"));
     checkDownloadStatus().catch((err) => igdbLogger.error({ err }, "Error in checkDownloadStatus"));
     checkAutoSearch().catch((err) => igdbLogger.error({ err }, "Error in checkAutoSearch"));
@@ -417,13 +425,8 @@ export async function checkDownloadStatus() {
     return;
   }
 
-  // Prune stale entries from downloadMissCount (e.g. downloads removed from DB while still downloading)
-  const activeDownloadIds = new Set(downloadingDownloads.map((d) => d.id));
-  for (const key of Array.from(downloadMissCount.keys())) {
-    if (!activeDownloadIds.has(key)) {
-      downloadMissCount.delete(key);
-    }
-  }
+  // No in-memory map prune needed — counters live on game_downloads rows
+  // and are removed implicitly when the row is deleted.
 
   // Group by downloader
   const downloadsByDownloader = new Map<string, typeof downloadingDownloads>();
@@ -471,7 +474,7 @@ export async function checkDownloadStatus() {
 
         if (remoteDownload) {
           // Clear any previous miss count — download is alive.
-          downloadMissCount.delete(download.id);
+          await storage.resetGameDownloadMissCount(download.id);
 
           igdbLogger.debug(
             {
@@ -616,8 +619,9 @@ export async function checkDownloadStatus() {
 
           // Guard against false "not found" during brief queue→history transitions
           // (common with SABnzbd post-processing). Only act after several consecutive misses.
-          const misses = (downloadMissCount.get(download.id) ?? 0) + 1;
-          downloadMissCount.set(download.id, misses);
+          // Counter is persisted on game_downloads.miss_count so a Questarr
+          // restart doesn't reset it.
+          const misses = await storage.incrementGameDownloadMissCount(download.id);
 
           igdbLogger.debug(
             {
@@ -645,7 +649,7 @@ export async function checkDownloadStatus() {
           }
 
           // Threshold reached — proceed with assumption of completion.
-          downloadMissCount.delete(download.id);
+          await storage.resetGameDownloadMissCount(download.id);
 
           // Fetch game info for better logging and notification
           const game = await storage.getGame(download.gameId);
@@ -686,10 +690,88 @@ export async function checkDownloadStatus() {
       }
     } catch (error) {
       igdbLogger.error({ error, downloaderId }, "Error checking downloader status");
+      // Don't punish in-flight downloads for a transient downloader-side
+      // error — clear the persisted miss counter so the next successful
+      // poll starts fresh.
       for (const dl of downloads) {
-        downloadMissCount.delete(dl.id);
+        await storage.resetGameDownloadMissCount(dl.id);
       }
     }
+  }
+}
+
+/**
+ * Retro fork: boot-time reconciliation of in-flight downloads.
+ *
+ * Runs once at cron startup before the regular DOWNLOAD_CHECK_INTERVAL_MS
+ * tick. For every gameDownload still in "downloading" or "paused" state,
+ * query its downloader's queue + history to determine the authoritative
+ * current state and update the row + the parent game's status accordingly.
+ *
+ * Without this, a Questarr restart while a download finishes during the
+ * gap leaves the gameDownload in "downloading" forever (history isn't
+ * polled by the regular tick — it's only consulted when the queue check
+ * misses, which then takes 3 ticks to time out). This pass is the one
+ * place that says "tell me where this download REALLY is right now."
+ */
+export async function reconcileDownloadsAtStartup(): Promise<void> {
+  try {
+    const downloads = await storage.getDownloadingGameDownloads();
+    if (downloads.length === 0) {
+      igdbLogger.debug("Reconcile-on-boot: no in-flight downloads to check");
+      return;
+    }
+    igdbLogger.info(
+      { count: downloads.length },
+      "Reconcile-on-boot: checking each in-flight download against its downloader"
+    );
+    let completed = 0;
+    let stillRunning = 0;
+    let unknown = 0;
+    for (const download of downloads) {
+      try {
+        const downloader = await storage.getDownloader(download.downloaderId);
+        if (!downloader || !downloader.enabled) continue;
+        const status = await DownloaderManager.getDownloadStatus(downloader, download.downloadHash);
+        if (!status) {
+          // Item missing from both queue and history — leave miss counter
+          // alone; the regular tick will handle the timeout naturally.
+          unknown++;
+          continue;
+        }
+        const isComplete =
+          status.status === "completed" || status.status === "seeding" || status.progress >= 100;
+        if (isComplete) {
+          await storage.updateGameDownloadStatus(download.id, "completed");
+          await storage.updateGameStatus(download.gameId, { status: "owned" });
+          await storage.resetGameDownloadMissCount(download.id);
+          completed++;
+          igdbLogger.info(
+            { downloadId: download.id, gameId: download.gameId, title: download.downloadTitle },
+            "Reconcile-on-boot: marked completed (was missed during downtime)"
+          );
+        } else {
+          // Still alive in the downloader; just clear any stale miss counter
+          // from before the restart.
+          await storage.resetGameDownloadMissCount(download.id);
+          stillRunning++;
+        }
+      } catch (err) {
+        igdbLogger.warn(
+          { id: download.id, err: err instanceof Error ? err.message : String(err) },
+          "Reconcile-on-boot: per-download error"
+        );
+      }
+    }
+    igdbLogger.info(
+      { completed, stillRunning, unknown, total: downloads.length },
+      "Reconcile-on-boot: complete"
+    );
+  } catch (err) {
+    igdbLogger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Reconcile-on-boot: top-level error"
+    );
   }
 }
 

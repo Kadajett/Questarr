@@ -158,6 +158,11 @@ export const gameDownloads = sqliteTable("game_downloads", {
   downloadTitle: text("download_title").notNull(),
   status: text("status").notNull().default("downloading"),
   fileSize: integer("file_size"), // bytes, stored at completion when available
+  // Retro fork: persistent miss counter for the cron's
+  // checkDownloadStatus loop. Was an in-memory Map, but it lost state
+  // across restarts so a chronically-missing item never tripped the
+  // reset-to-wanted timeout. Persisted here so the count survives.
+  missCount: integer("miss_count").notNull().default(0),
   addedAt: integer("added_at", { mode: "timestamp_ms" }).default(
     sql`(strftime('%s', 'now') * 1000)`
   ),

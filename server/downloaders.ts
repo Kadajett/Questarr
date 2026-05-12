@@ -3687,6 +3687,40 @@ export class SABnzbdClient implements DownloaderClient {
         }
       }
 
+      // Retro fork: SAB moves completed jobs from queue to history within
+      // seconds. Without merging history into this list the UI's "Completed"
+      // tab stays empty forever — the user can never see what finished
+      // recently. Pull the most recent 50 history items and surface them.
+      try {
+        const historyUrl = this.getApiUrl("history", { limit: "50" });
+        const historyResp = await this.fetchWithFallback(historyUrl);
+        const historyData = await historyResp.json();
+        const history: SABnzbdHistory = historyData.history;
+        for (const slot of history?.slots ?? []) {
+          // Skip if this nzo_id is somehow still in the live queue (shouldn't
+          // happen but defends against the brief overlap window).
+          if (results.some((r) => r.id === slot.nzo_id)) continue;
+          const failed = slot.status === "Failed" || !!slot.fail_message;
+          results.push({
+            id: slot.nzo_id,
+            name: slot.name,
+            downloadType: "usenet",
+            status: failed ? "error" : "completed",
+            progress: failed ? 0 : 100,
+            size: slot.bytes,
+            downloaded: failed ? 0 : slot.bytes,
+            ...(failed ? { error: slot.fail_message } : {}),
+          });
+        }
+      } catch (historyErr) {
+        // History is best-effort. Don't fail the whole queue listing if it
+        // glitches.
+        downloadersLogger.warn(
+          { err: historyErr instanceof Error ? historyErr.message : String(historyErr) },
+          "SABnzbd: history fetch failed during getAllDownloads"
+        );
+      }
+
       return results;
     } catch (error) {
       downloadersLogger.error({ error }, "Failed to get SABnzbd queue");

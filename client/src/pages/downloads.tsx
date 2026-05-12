@@ -533,8 +533,11 @@ export default function Downloads() {
         >
           <Tag className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span>
-            Category filter active —{" "}
-            {categoryBannerEntries.map(({ name, category }) => `${name}: "${category}"`).join(", ")}
+            Showing items from{" "}
+            {categoryBannerEntries
+              .map(({ name, category }) => `${name} (category: "${category}")`)
+              .join(", ")}
+            . This scope is set on the downloader itself, not removable from this page.
           </span>
         </div>
       )}

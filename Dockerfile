@@ -4,7 +4,10 @@ FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+# Retro fork: npm install (not ci) so optional native deps not pinned in the
+# lockfile (rolldown/oxide wasm bindings, bufferutil, @emnapi/*) don't fail
+# the build inside Alpine. Lockfile is still respected for everything else.
+RUN npm install --no-audit --no-fund
 
 # Build client and server
 FROM base AS builder

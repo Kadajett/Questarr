@@ -12,6 +12,62 @@ const MAX_SEARCH_ATTEMPTS = 5;
 // IGDB status value for Early Access games
 export const IGDB_EARLY_ACCESS_STATUS = 4;
 
+// Retro fork: IGDB platform-id lookup. Used by searchGames(...) to constrain
+// matches to a specific platform so e.g. "Metal Gear Solid" resolves to the
+// PSX original instead of the most-popular PC port.
+//
+// Keys are the canonical platform names we surface in the UI and store in
+// `games.target_platform`. Values are IGDB's numeric platform ids
+// (see https://api-docs.igdb.com/#platform).
+export const PLATFORM_NAME_TO_IGDB_ID: Readonly<Record<string, number>> = {
+  PC: 6, // PC (Microsoft Windows)
+  PlayStation: 7, // PSX / PS1
+  "PlayStation 2": 8,
+  "PlayStation 3": 9,
+  "PlayStation 4": 48,
+  "PlayStation 5": 167,
+  "PlayStation Portable": 38,
+  "PlayStation Vita": 46,
+  SNES: 19, // Super Nintendo Entertainment System
+  NES: 18, // Nintendo Entertainment System
+  "Nintendo 64": 4,
+  GameCube: 21,
+  Wii: 5,
+  "Wii U": 41,
+  "Nintendo Switch": 130,
+  "Game Boy": 33,
+  "Game Boy Color": 22,
+  "Game Boy Advance": 24,
+  "Nintendo DS": 20,
+  "Nintendo 3DS": 37,
+  Genesis: 29, // Sega Mega Drive/Genesis
+  "Sega CD": 78,
+  "Sega 32X": 30,
+  "Sega Saturn": 32,
+  Dreamcast: 23,
+  "Game Gear": 35,
+  "Master System": 64,
+  Xbox: 11,
+  "Xbox 360": 12,
+  "Xbox One": 49,
+  "Xbox Series X": 169,
+  Arcade: 52,
+  "Neo Geo": 80,
+  "Neo Geo Pocket": 117,
+  "Neo Geo Pocket Color": 119,
+  TurboGrafx16: 86, // TurboGrafx-16/PC Engine
+  Atari2600: 59,
+  Atari5200: 66,
+  Atari7800: 60,
+  AtariJaguar: 62,
+  AtariLynx: 61,
+} as const;
+
+export function getIgdbPlatformId(platformName: string | null | undefined): number | undefined {
+  if (!platformName) return undefined;
+  return PLATFORM_NAME_TO_IGDB_ID[platformName];
+}
+
 // Shared field list for all IGDB game queries
 const IGDB_GAME_FIELDS =
   "name, summary, cover.url, first_release_date, rating, aggregated_rating, aggregated_rating_count, platforms.name, genres.name, screenshots.url, websites.url, websites.category, involved_companies.company.name, involved_companies.developer, involved_companies.publisher, status";
@@ -301,7 +357,7 @@ class IGDBClient {
     });
   }
 
-  async searchGames(query: string, limit: number = 20): Promise<IGDBGame[]> {
+  async searchGames(query: string, limit: number = 20, platformId?: number): Promise<IGDBGame[]> {
     if (!(await this.ensureConfigured())) {
       igdbLogger.warn("IGDB credentials not configured, skipping search");
       return [];
@@ -313,19 +369,33 @@ class IGDBClient {
 
     let attemptCount = 0;
 
+    // Retro fork: when a platform id is supplied, filter every search approach
+    // to that platform so e.g. searching "Metal Gear Solid" with platformId=7
+    // returns the PSX original, not the PC port. IGDB combines `where` clauses
+    // with `&`.
+    const platformWhere =
+      typeof platformId === "number" && Number.isFinite(platformId)
+        ? `platforms = (${platformId})`
+        : null;
+    const combineWhere = (base: string | null): string => {
+      if (!platformWhere) return base ? `where ${base}; ` : "";
+      if (!base) return `where ${platformWhere}; `;
+      return `where ${base} & ${platformWhere}; `;
+    };
+
     // Try multiple search approaches to maximize results
     const searchApproaches = [
       // Approach 1: Full text search without category filter
-      `search "${sanitizedQuery}"; fields ${IGDB_GAME_FIELDS}; limit ${limit};`,
+      `search "${sanitizedQuery}"; fields ${IGDB_GAME_FIELDS}; ${combineWhere(null)}limit ${limit};`,
 
       // Approach 2: Full text search with category filter
-      `search "${sanitizedQuery}"; fields ${IGDB_GAME_FIELDS}; where category = 0; limit ${limit};`,
+      `search "${sanitizedQuery}"; fields ${IGDB_GAME_FIELDS}; ${combineWhere("category = 0")}limit ${limit};`,
 
       // Approach 3: Case-insensitive name matching without category
-      `fields ${IGDB_GAME_FIELDS}; where name ~= "${sanitizedQuery}"; limit ${limit};`,
+      `fields ${IGDB_GAME_FIELDS}; ${combineWhere(`name ~= "${sanitizedQuery}"`)}limit ${limit};`,
 
       // Approach 4: Partial name matching without category
-      `fields ${IGDB_GAME_FIELDS}; where name ~ *"${sanitizedQuery}"*; sort rating desc; limit ${limit};`,
+      `fields ${IGDB_GAME_FIELDS}; ${combineWhere(`name ~ *"${sanitizedQuery}"*`)}sort rating desc; limit ${limit};`,
     ];
 
     for (let i = 0; i < searchApproaches.length && attemptCount < MAX_SEARCH_ATTEMPTS; i++) {
@@ -389,7 +459,7 @@ class IGDBClient {
           const sanitizedWord = sanitizeIgdbInput(word);
           if (!sanitizedWord) return [];
 
-          const wordQuery = `fields ${IGDB_GAME_FIELDS}; where name ~ *"${sanitizedWord}"*; sort rating desc; limit ${limit};`;
+          const wordQuery = `fields ${IGDB_GAME_FIELDS}; ${combineWhere(`name ~ *"${sanitizedWord}"*`)}sort rating desc; limit ${limit};`;
           // Cache word search results for 15 minutes
           return await this.makeRequest<IGDBGame[]>("games", wordQuery, 15 * 60 * 1000);
         } catch (error) {

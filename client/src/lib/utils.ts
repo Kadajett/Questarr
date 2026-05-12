@@ -71,6 +71,7 @@ export function mapGameToInsertGame(game: Game): InsertGame {
     status: game.status,
     hidden: game.hidden || false,
     earlyAccess: game.earlyAccess || false,
+    targetPlatform: game.targetPlatform ?? null,
   };
 }
 

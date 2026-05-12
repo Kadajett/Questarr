@@ -1,0 +1,1 @@
+ALTER TABLE `games` ADD `target_platform` text;

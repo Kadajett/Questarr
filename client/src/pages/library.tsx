@@ -12,6 +12,22 @@ import { Gamepad2 } from "lucide-react";
 import { useViewControls } from "@/hooks/use-view-controls";
 import PageToolbar from "@/components/PageToolbar";
 import { useDownloadSummary } from "@/hooks/use-download-summary";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+// Retro fork: sentinels for the platform filter dropdown.
+const PLATFORM_FILTER_ALL = "__all__";
+const PLATFORM_FILTER_NONE = "__none__";
+
+interface PlatformOption {
+  name: string;
+  igdbId: number;
+}
 
 export default function LibraryPage() {
   const { toast } = useToast();
@@ -22,9 +38,17 @@ export default function LibraryPage() {
   const [showSearchResultsOnly, setShowSearchResultsOnly] = useState(false);
   const [showUpdateAvailableOnly, setShowUpdateAvailableOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [platformFilter, setPlatformFilter] = useState<string>(PLATFORM_FILTER_ALL);
 
   const { data: games = [], isLoading } = useQuery<Game[]>({
     queryKey: ["/api/games", "?status=owned,completed,downloading"],
+  });
+
+  // Retro fork: enumerate the fork's known platforms for the filter dropdown.
+  const { data: platforms = [] } = useQuery<PlatformOption[]>({
+    queryKey: ["/api/platforms"],
+    queryFn: () => apiRequest("GET", "/api/platforms").then((r) => r.json()),
+    staleTime: Infinity,
   });
 
   const libraryGames = useMemo(() => {
@@ -40,8 +64,20 @@ export default function LibraryPage() {
       result = result.filter((g) => downloadSummaries[g.id]?.hasUpdateDownload);
     if (searchQuery)
       result = result.filter((g) => g.title.toLowerCase().includes(searchQuery.toLowerCase()));
+    if (platformFilter === PLATFORM_FILTER_NONE) {
+      result = result.filter((g) => g.targetPlatform == null);
+    } else if (platformFilter !== PLATFORM_FILTER_ALL) {
+      result = result.filter((g) => g.targetPlatform === platformFilter);
+    }
     return result;
-  }, [libraryGames, showDownloadsOnly, showUpdateAvailableOnly, downloadSummaries, searchQuery]);
+  }, [
+    libraryGames,
+    showDownloadsOnly,
+    showUpdateAvailableOnly,
+    downloadSummaries,
+    searchQuery,
+    platformFilter,
+  ]);
 
   const statusMutation = useMutation({
     mutationFn: async ({ gameId, status }: { gameId: string; status: GameStatus }) => {
@@ -81,14 +117,35 @@ export default function LibraryPage() {
           onSearchChange={setSearchQuery}
           searchPlaceholder="Filter library..."
           filterPills={
-            <GameFilterPills
-              showSearchResultsOnly={showSearchResultsOnly}
-              setShowSearchResultsOnly={setShowSearchResultsOnly}
-              showDownloadsOnly={showDownloadsOnly}
-              setShowDownloadsOnly={setShowDownloadsOnly}
-              showUpdateAvailableOnly={showUpdateAvailableOnly}
-              setShowUpdateAvailableOnly={setShowUpdateAvailableOnly}
-            />
+            <div className="flex items-center gap-2 flex-wrap">
+              <GameFilterPills
+                showSearchResultsOnly={showSearchResultsOnly}
+                setShowSearchResultsOnly={setShowSearchResultsOnly}
+                showDownloadsOnly={showDownloadsOnly}
+                setShowDownloadsOnly={setShowDownloadsOnly}
+                showUpdateAvailableOnly={showUpdateAvailableOnly}
+                setShowUpdateAvailableOnly={setShowUpdateAvailableOnly}
+              />
+              {/* Retro fork: filter library by per-game target platform. */}
+              <Select value={platformFilter} onValueChange={setPlatformFilter}>
+                <SelectTrigger
+                  className="h-8 w-[180px]"
+                  aria-label="Filter by target platform"
+                  data-testid="select-library-platform"
+                >
+                  <SelectValue placeholder="All platforms" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={PLATFORM_FILTER_ALL}>All platforms</SelectItem>
+                  <SelectItem value={PLATFORM_FILTER_NONE}>No platform set</SelectItem>
+                  {platforms.map((p) => (
+                    <SelectItem key={p.name} value={p.name}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           }
           viewControls={{
             viewMode,

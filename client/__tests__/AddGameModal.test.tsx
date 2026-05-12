@@ -18,6 +18,11 @@ vi.mock("lucide-react", () => ({
   Calendar: () => <div data-testid="icon-calendar" />,
   Loader2: () => <div />,
   X: () => <div />,
+  // Retro fork: AddGameModal now embeds a Radix Select (platform picker)
+  // which pulls in these lucide icons.
+  ChevronDown: () => <div />,
+  ChevronUp: () => <div />,
+  Check: () => <div />,
 }));
 
 vi.mock("wouter", () => ({

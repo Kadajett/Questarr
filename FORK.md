@@ -2,8 +2,8 @@
 
 This is a public personal fork of [Doezer/Questarr](https://github.com/Doezer/Questarr).
 The upstream project is a great PC-games tracker. This fork extends it into a
-**multi-platform retro game tracker** — think *Sonarr/Radarr but for SNES,
-PS1, GBA, etc.* — alongside the existing PC use case.
+**multi-platform retro game tracker** — think _Sonarr/Radarr but for SNES,
+PS1, GBA, etc._ — alongside the existing PC use case.
 
 It is not currently intended to be merged upstream. If any change here turns
 out to be generally useful, a clean PR will be opened separately.
@@ -28,7 +28,7 @@ use:
 Together those make it impossible to reliably bulk-add a list like
 "top 50 PS1 games" — most resolve to the wrong record, and even when they
 resolve correctly, the global preferred-platform setting can't accommodate
-"I track PS1 *and* SNES *and* GBA".
+"I track PS1 _and_ SNES _and_ GBA".
 
 ## What this fork changes (planned)
 
@@ -71,11 +71,13 @@ See [`RETRO_FORK_PLAN.md`](./RETRO_FORK_PLAN.md) for the full plan. High level:
 
 ## Status
 
-| Phase | Status |
-|-------|--------|
-| Phase 1 — MVP | not started |
-| Phase 2 — UX  | not started |
-| Phase 3 — RomM | not started |
+| Phase                                     | Status        |
+| ----------------------------------------- | ------------- |
+| Phase 1 — MVP (schema + API + minimal UI) | done          |
+| Phase 1.5 — bulk match-and-add API        | done (server) |
+| Phase 1.6 — ScreenScraper.fr integration  | planned       |
+| Phase 2 — UX polish                       | not started   |
+| Phase 3 — RomM sync                       | not started   |
 
 ## Branch model
 

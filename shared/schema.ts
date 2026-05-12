@@ -73,6 +73,11 @@ export const games = sqliteTable("games", {
   >(),
   aggregatedRating: real("aggregated_rating"),
   status: text("status").notNull().default("wanted"), // Enum validation handled by Zod
+  // Retro fork: per-game target platform (e.g. "PlayStation", "SNES").
+  // Used by auto-search/indexer filtering instead of the global
+  // `userSettings.preferredPlatform` so a single library can track multiple
+  // retro platforms at once. Null = unspecified, no platform filter applied.
+  targetPlatform: text("target_platform"),
   originalReleaseDate: text("original_release_date"),
   releaseStatus: text("release_status").default("upcoming"), // Enum validation handled by Zod
   earlyAccess: integer("early_access", { mode: "boolean" }).notNull().default(false),
@@ -230,6 +235,11 @@ export const updateGameHiddenSchema = z.object({
   hidden: z.boolean(),
 });
 
+// Retro fork: update a game's target platform (e.g. "PlayStation"). Pass null to clear.
+export const updateGameTargetPlatformSchema = z.object({
+  targetPlatform: z.string().min(1).max(64).nullable(),
+});
+
 export const updateGameUserRatingSchema = z.object({
   userRating: z
     .number()
@@ -381,6 +391,7 @@ export type Game = typeof games.$inferSelect & {
 export type InsertGame = (typeof insertGameSchema)["_output"];
 
 export type UpdateGameStatus = (typeof updateGameStatusSchema)["_output"];
+export type UpdateGameTargetPlatform = (typeof updateGameTargetPlatformSchema)["_output"];
 
 export type Indexer = typeof indexers.$inferSelect;
 export type InsertIndexer = (typeof insertIndexerSchema)["_output"];

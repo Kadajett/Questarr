@@ -715,7 +715,11 @@ export async function checkAutoSearch() {
         let gamesWithResults = 0;
 
         const preferredGroups = parseJsonStringArray(settings.preferredReleaseGroups);
-        const preferredPlatform = settings.preferredPlatform ?? null;
+        // Retro fork: the per-game `targetPlatform` supersedes the legacy
+        // global `userSettings.preferredPlatform` for filtering. We still
+        // read the global as a fallback so libraries from before the fork
+        // keep behaving the same until a per-game value is set.
+        const fallbackPlatform = settings.preferredPlatform ?? null;
 
         for (const game of wantedGames) {
           try {
@@ -738,10 +742,11 @@ export async function checkAutoSearch() {
               continue;
             }
 
-            // Apply platform filter first (strict), then preferred groups (soft preference)
+            // Apply platform filter first (strict), then preferred groups (soft preference).
+            // Per-game targetPlatform wins; fall back to the global preference.
             const platformFilteredMain = applyPreferredPlatformFilter(
               searchResult.mainItems,
-              preferredPlatform
+              game.targetPlatform ?? fallbackPlatform
             );
             const mainItems = applyPreferredGroupsFilter(platformFilteredMain, preferredGroups);
 
@@ -850,7 +855,7 @@ export async function checkAutoSearch() {
 
             const platformFilteredUpdate = applyPreferredPlatformFilter(
               searchResult.updateItems,
-              preferredPlatform
+              game.targetPlatform ?? fallbackPlatform
             );
             const updateItems = applyPreferredGroupsFilter(platformFilteredUpdate, preferredGroups);
 

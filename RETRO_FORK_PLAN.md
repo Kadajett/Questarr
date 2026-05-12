@@ -3,7 +3,7 @@
 ## Goal
 
 Turn Questarr from a "PC-game tracker that happens to use IGDB" into a
-**multi-platform retro game tracker** where each game has a *target platform*
+**multi-platform retro game tracker** where each game has a _target platform_
 (SNES, PS1, GBA, etc.) and auto-search / IGDB matching are platform-aware.
 
 ## Non-goals (for now)
@@ -46,6 +46,7 @@ Turn Questarr from a "PC-game tracker that happens to use IGDB" into a
 ### Schema
 
 Add to `shared/schema.ts` (`games` table):
+
 ```ts
 targetPlatform: text("target_platform"),  // null = unspecified, e.g. "PlayStation", "SNES"
 ```
@@ -67,7 +68,7 @@ back-compat — just stop reading it in `applyPreferredPlatformFilter`).
   platforms we care about. Seed with the 14 RomM-populated platforms:
   ```ts
   const PLATFORM_NAME_TO_IGDB_ID = {
-    "PlayStation": 7,
+    PlayStation: 7,
     "Super Nintendo Entertainment System": 19,
     "Game Boy Advance": 24,
     "Game Boy Color": 22,
@@ -77,11 +78,11 @@ back-compat — just stop reading it in `applyPreferredPlatformFilter`).
     "Neo Geo Pocket Color": 119,
     "Nintendo 3DS": 37,
     "Neo Geo MVS": 79,
-    "Arcade": 52,
+    Arcade: 52,
     "Nintendo Switch": 130,
     "PlayStation 2": 8,
     "Nintendo DS": 20,
-    "GameCube": 21,
+    GameCube: 21,
     "Game Boy": 33,
   };
   ```
@@ -101,6 +102,7 @@ back-compat — just stop reading it in `applyPreferredPlatformFilter`).
 ### Client
 
 Smallest useful change for Phase 1:
+
 - Game card: show a target-platform badge (use the existing `<Badge>` component).
 - Add-game modal: add a Platform `<Select>` populated from the constant
   above. Default = the last-used platform (localStorage).
@@ -110,11 +112,84 @@ Smallest useful change for Phase 1:
 ### Backfill / migration
 
 Standalone script `scripts/migrate-target-platform.ts` that:
+
 1. Sets `target_platform = "PlayStation"` for the 50 games already added.
 2. For the 22 misresolved games, re-queries IGDB with platform=7 filter,
    updates `igdb_id`, `platforms`, `cover_url`, `summary`, `release_date`
    in place. No delete + re-add — preserve the row IDs and `added_at`.
 3. Idempotent — safe to re-run.
+
+## Phase 1.5 — bulk ingestion + wantlist API (≈half day)
+
+Added at user request after Phase 1 schema/API landed.
+
+- `POST /api/games/bulk-match-and-add` — body `{items: [{title, platform?, status?}, ...]}`,
+  up to 200 per call. Per-row results with `added | already_in_collection |
+no_match | invalid | error`. Used for:
+  - Importing existing libraries (status="owned", platform="SNES" etc).
+  - Quickly pasting a wantlist of titles you want for a specific platform.
+- Single-call duplicate detection (igdbId or case-insensitive title) with
+  in-batch awareness — adding "Tetris" twice in one call returns the second
+  as `already_in_collection`.
+- IGDB rate limit is already enforced upstream by the IGDB client (300ms
+  serialised gap), so the loop doesn't need extra sleeps.
+
+**Status:** done (server-side). Frontend "import a list" UI deferred.
+
+## Phase 1.6 — ScreenScraper.fr integration (≈1 day, planned)
+
+Added at user request. ScreenScraper is the canonical retro-game metadata
+source for emulator front-ends (EmulationStation, Skraper, BatoceraScrap,
+etc.) and is hash-aware — it can identify a specific ROM by its CRC/MD5/SHA1
+and return per-ROM cover art, screenshots, marquees, and metadata that IGDB
+doesn't have. Auth uses two pairs of credentials:
+[`devid`/`devpassword`] (developer registration) and
+[`ssid`/`sspassword`] (per-user account, optional but raises rate limits).
+
+### Settings
+
+- `system_config` keys (mirrors `igdb.clientId/Secret`):
+  - `screenscraper.devid`, `screenscraper.devpassword`
+  - `screenscraper.ssid`, `screenscraper.sspassword` (optional)
+  - `screenscraper.mode` = `off` | `fallback` | `primary`
+- New settings page section + a new `/api/settings/screenscraper` endpoint.
+
+### Server
+
+- `server/screenscraper.ts` — thin client around
+  `https://api.screenscraper.fr/api2/`:
+  - `searchGameByName(query, systemId?)` → `jeuRecherche.php`
+  - `lookupByName(name, systemId)` → `jeuInfos.php?recherche=<name>`
+  - `lookupByHash({md5|sha1|crc}, systemId)` → `jeuInfos.php?{md5,sha1,crc}=...`
+  - Maps ScreenScraper system IDs (e.g., `SNES = 4`, `PSX = 57`) ↔ our
+    canonical platform names. Add `PLATFORM_NAME_TO_SS_SYSTEM_ID`.
+- Match flow:
+  - **mode=off** (default): unchanged — IGDB only.
+  - **mode=fallback**: IGDB first; if zero results AND a `targetPlatform` is
+    set, query ScreenScraper for the same platform.
+  - **mode=primary**: ScreenScraper first; fall back to IGDB only if
+    ScreenScraper has zero results.
+  - Result is normalised into the same shape `formatGameData` returns so the
+    rest of the app doesn't care which source provided it. Add
+    `source: "screenscraper"` to track origin in the games table.
+- Hash-aware ingestion: `POST /api/games/ingest-folder` with a list of
+  `{filename, md5?, sha1?, crc?, platform}` triplets — for each row, ask
+  ScreenScraper to identify the ROM and add it as Owned with rich metadata.
+  Out of scope for the _initial_ ScreenScraper PR; track as Phase 1.7.
+
+### Migration
+
+- Add `system_config` rows lazily — no schema change needed because
+  `system_config` is a generic key/value store.
+- Optional games-table column: `screenscraper_id integer` to enable later
+  resync without re-querying. Defer until needed.
+
+### Risk notes
+
+- ScreenScraper rate-limits aggressively for unregistered apps. Need devid
+  registration before this can ship; document the URL in the settings UI.
+- ScreenScraper returns French-leaning metadata by default; the API supports
+  `langue=en` — set it on every request.
 
 ## Phase 2 — UX polish (≈1 day)
 
@@ -122,8 +197,8 @@ Standalone script `scripts/migrate-target-platform.ts` that:
   dropdown in the add-game modal so it doesn't show all 200+ IGDB platforms.
 - Library: tabbed view by platform (`All | PS1 | SNES | GBA | …`).
 - Discover: platform filter (already partially exists for search results).
-- Quick-add UX: when pasting a name, show top 3 IGDB matches *for the
-  selected platform* and let user pick, instead of auto-picking #1.
+- Quick-add UX: when pasting a name, show top 3 IGDB matches _for the
+  selected platform_ and let user pick, instead of auto-picking #1.
 
 ## Phase 3 — RomM integration (≈1–2 days)
 
@@ -139,6 +214,7 @@ Standalone script `scripts/migrate-target-platform.ts` that:
 ## Build & deploy
 
 ### Local dev loop
+
 ```sh
 cd ~/dev/Questarr
 docker compose up -d   # uses upstream's docker-compose.yml, IGDB creds via .env
@@ -146,12 +222,14 @@ docker compose up -d   # uses upstream's docker-compose.yml, IGDB creds via .env
 ```
 
 ### CI (GitHub Actions)
+
 - Modify `.github/workflows/ci.yml` to also build and push to
   `registry.local/questarr:${git-sha}` and `:latest` on push to `main`.
 - Need to surface a registry credential as a GH secret OR self-host the
   runner on the cluster (preferred — local-only registry, no public push).
 
 ### Cluster rollout
+
 - Update `image:` in
   `~/dev/plexPod/manifests/questarr/deployment.yaml` to
   `registry.local/questarr:<sha>`.
@@ -179,7 +257,7 @@ docker compose up -d   # uses upstream's docker-compose.yml, IGDB creds via .env
    even though the column doesn't exist in the schema (silently dropped).
    Need to remove that and any other "PC"-isms in the UI copy.
 
-5. **Naming.** "Questarr" is recognizably an *arr; "Retroarr" is more
+5. **Naming.** "Questarr" is recognizably an \*arr; "Retroarr" is more
    accurate. Defer rename until v0.2 when the UI changes are visible.
 
 ## What I need from you to start

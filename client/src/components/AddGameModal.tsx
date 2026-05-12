@@ -12,6 +12,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Search, Plus, Star, AlertCircle, Calendar } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { type Game, type InsertGame, type Config } from "@shared/schema";
@@ -29,12 +36,58 @@ interface AddGameModalProps {
   initialQuery?: string;
 }
 
+// Retro fork: sentinel value for the "Any platform" option in the platform
+// dropdown. Radix Select doesn't allow empty-string values, so we use a
+// distinct token and translate to null/undefined at the API boundary.
+const ANY_PLATFORM = "__any__";
+const PLATFORM_STORAGE_KEY = "retro-fork:lastPlatform";
+
+function readStoredPlatform(): string {
+  try {
+    return globalThis.localStorage?.getItem(PLATFORM_STORAGE_KEY) || ANY_PLATFORM;
+  } catch {
+    return ANY_PLATFORM;
+  }
+}
+
+function writeStoredPlatform(value: string): void {
+  try {
+    if (value === ANY_PLATFORM) {
+      globalThis.localStorage?.removeItem(PLATFORM_STORAGE_KEY);
+    } else {
+      globalThis.localStorage?.setItem(PLATFORM_STORAGE_KEY, value);
+    }
+  } catch {
+    /* localStorage may be unavailable (SSR, sandboxed test env) — ignore. */
+  }
+}
+
+interface PlatformOption {
+  name: string;
+  igdbId: number;
+}
+
 export default function AddGameModal({ children, initialQuery }: AddGameModalProps) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [targetPlatform, setTargetPlatform] = useState<string>(readStoredPlatform);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  // Retro fork: list of platforms the server's PLATFORM_NAME_TO_IGDB_ID
+  // knows about. Cached forever in React Query — it's a static const on the
+  // server.
+  const { data: platforms = [] } = useQuery<PlatformOption[]>({
+    queryKey: ["/api/platforms"],
+    queryFn: () => apiRequest("GET", "/api/platforms").then((r) => r.json()),
+    staleTime: Infinity,
+  });
+
+  const handlePlatformChange = (next: string) => {
+    setTargetPlatform(next);
+    writeStoredPlatform(next);
+  };
 
   const { data: config } = useQuery<Config>({
     queryKey: ["/api/config"],
@@ -65,9 +118,11 @@ export default function AddGameModal({ children, initialQuery }: AddGameModalPro
     }
   }, [open, initialQuery]);
 
-  // Search IGDB for games
+  // Search IGDB for games. Retro fork: when a platform is selected, scope the
+  // IGDB query to that platform so e.g. "Metal Gear Solid" returns the PSX
+  // original instead of the most-popular PC port.
   const { data: searchResults = [], isLoading: isSearching } = useQuery({
-    queryKey: ["/api/igdb/search", debouncedQuery],
+    queryKey: ["/api/igdb/search", debouncedQuery, targetPlatform],
     queryFn: async () => {
       if (!debouncedQuery.trim()) return [];
       const token = localStorage.getItem("token");
@@ -75,10 +130,11 @@ export default function AddGameModal({ children, initialQuery }: AddGameModalPro
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
       }
-      const response = await fetch(
-        `/api/igdb/search?q=${encodeURIComponent(debouncedQuery)}&limit=10`,
-        { headers }
-      );
+      const params = new URLSearchParams({ q: debouncedQuery, limit: "10" });
+      if (targetPlatform !== ANY_PLATFORM) {
+        params.set("platform", targetPlatform);
+      }
+      const response = await fetch(`/api/igdb/search?${params.toString()}`, { headers });
       if (!response.ok) throw new Error("Search failed");
       return response.json();
     },
@@ -128,8 +184,12 @@ export default function AddGameModal({ children, initialQuery }: AddGameModalPro
   };
 
   const handleAddGame = (searchResult: SearchResult) => {
-    // Map to InsertGame to filter out client-only fields before sending to server
+    // Map to InsertGame to filter out client-only fields before sending to server.
+    // Retro fork: stamp the currently-selected platform onto the new game.
     const gameData = mapGameToInsertGame(searchResult);
+    if (targetPlatform !== ANY_PLATFORM) {
+      gameData.targetPlatform = targetPlatform;
+    }
     addGameMutation.mutate(gameData);
   };
 
@@ -176,6 +236,24 @@ export default function AddGameModal({ children, initialQuery }: AddGameModalPro
                   aria-label="Search games"
                 />
               </div>
+              {/* Retro fork: per-platform search scope. Persists across opens. */}
+              <Select value={targetPlatform} onValueChange={handlePlatformChange}>
+                <SelectTrigger
+                  className="w-[200px]"
+                  data-testid="select-target-platform"
+                  aria-label="Target platform"
+                >
+                  <SelectValue placeholder="Any platform" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY_PLATFORM}>Any platform</SelectItem>
+                  {platforms.map((p) => (
+                    <SelectItem key={p.name} value={p.name}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Button
                 type="submit"
                 disabled={isSearching}

@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage.js";
-import { igdbClient } from "./igdb.js";
+import { igdbClient, getIgdbPlatformId, PLATFORM_NAME_TO_IGDB_ID } from "./igdb.js";
 import { db } from "./db.js";
 import { sql } from "drizzle-orm";
 import {
@@ -10,6 +10,7 @@ import {
   updateGameStatusSchema,
   updateGameHiddenSchema,
   updateGameUserRatingSchema,
+  updateGameTargetPlatformSchema,
   insertIndexerSchema,
   insertDownloaderSchema,
   insertNotificationSchema,
@@ -876,7 +877,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get all games in collection
   app.get("/api/games", async (req, res) => {
     try {
-      const { search, includeHidden, status } = req.query;
+      const { search, includeHidden, status, targetPlatform } = req.query;
 
       const userId = req.user!.id;
       const showHidden = includeHidden === "true";
@@ -898,6 +899,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         games = await storage.getUserGames(userId, showHidden, statuses);
+      }
+
+      // Retro fork: optional client-side ?targetPlatform=PlayStation filter.
+      // Done in-memory because the existing storage methods don't take it; the
+      // typical user library is small enough that this is fine. ?targetPlatform=null
+      // returns games with no target platform set.
+      if (typeof targetPlatform === "string") {
+        if (targetPlatform === "null" || targetPlatform === "") {
+          games = games.filter((g) => g.targetPlatform == null);
+        } else {
+          games = games.filter((g) => g.targetPlatform === targetPlatform);
+        }
       }
 
       res.json(games);
@@ -1068,6 +1081,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
   );
+
+  // Retro fork: update a game's target platform (e.g. "PlayStation"). Pass
+  // null to clear. The platform is matched against PLATFORM_NAME_TO_IGDB_ID
+  // so auto-search can constrain indexer results to the right system.
+  app.patch(
+    "/api/games/:id/target-platform",
+    sensitiveEndpointLimiter,
+    sanitizeGameId,
+    validateRequest,
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const userId = req.user!.id;
+        const { targetPlatform } = updateGameTargetPlatformSchema.parse(req.body);
+
+        if (targetPlatform != null && getIgdbPlatformId(targetPlatform) === undefined) {
+          return res.status(400).json({
+            error: `Unknown platform "${targetPlatform}". Supported: ${Object.keys(PLATFORM_NAME_TO_IGDB_ID).join(", ")}`,
+          });
+        }
+
+        const updatedGame = await storage.updateGameTargetPlatform(id, userId, targetPlatform);
+        if (!updatedGame) {
+          return res.status(404).json({ error: "Game not found" });
+        }
+        res.json(updatedGame);
+      } catch (error) {
+        if (error instanceof z.ZodError) {
+          return res
+            .status(400)
+            .json({ error: "Invalid target platform data", details: error.errors });
+        }
+        routesLogger.error({ error }, "error updating game target platform");
+        res.status(500).json({ error: "Failed to update target platform" });
+      }
+    }
+  );
+
+  // Retro fork: enumerate the platforms the fork knows about (canonical name +
+  // IGDB id). The frontend uses this to populate the "platform" dropdown in
+  // the add-game modal and library filter.
+  app.get("/api/platforms", (_req: Request, res: Response) => {
+    const list = Object.entries(PLATFORM_NAME_TO_IGDB_ID)
+      .map(([name, igdbId]) => ({ name, igdbId }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    res.json(list);
+  });
 
   // Refresh metadata for all games
   app.post("/api/games/refresh-metadata", igdbRateLimiter, async (req, res) => {
@@ -1313,13 +1373,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     validateRequest,
     async (req: Request, res: Response) => {
       try {
-        const { q, limit } = req.query;
+        const { q, limit, platform } = req.query;
         if (!q || typeof q !== "string") {
           return res.status(400).json({ error: "Search query required" });
         }
 
         const limitNum = limit ? parseInt(limit as string) : 20;
-        const igdbGames = await igdbClient.searchGames(q, limitNum);
+        // Retro fork: optional ?platform=PlayStation scopes results.
+        const platformId =
+          typeof platform === "string" && platform.length > 0
+            ? getIgdbPlatformId(platform)
+            : undefined;
+        if (typeof platform === "string" && platform.length > 0 && platformId === undefined) {
+          return res.status(400).json({
+            error: `Unknown platform "${platform}". Supported: ${Object.keys(PLATFORM_NAME_TO_IGDB_ID).join(", ")}`,
+          });
+        }
+        const igdbGames = await igdbClient.searchGames(q, limitNum, platformId);
         const formattedGames = igdbGames.map((game) => igdbClient.formatGameData(game));
 
         res.json(formattedGames);
@@ -3060,21 +3130,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Match and add game from name (Quick Add)
+  // Match and add game from name (Quick Add).
+  // Retro fork: accepts an optional `platform` (canonical name from
+  // PLATFORM_NAME_TO_IGDB_ID) to scope the IGDB lookup to that platform and
+  // record it as the game's `targetPlatform`. Falls back to upstream
+  // behaviour (no filter, null targetPlatform) when omitted.
   app.post("/api/games/match-and-add", async (req, res, next) => {
     try {
-      const { title } = req.body;
+      const { title, platform } = req.body as { title?: string; platform?: string | null };
       if (!title || typeof title !== "string") {
         return res.status(400).json({ error: "Title is required" });
+      }
+      if (platform != null && typeof platform !== "string") {
+        return res.status(400).json({ error: "Platform must be a string when provided" });
+      }
+      const targetPlatform = platform && platform.length > 0 ? platform : null;
+      const platformId = getIgdbPlatformId(targetPlatform);
+      if (targetPlatform && platformId === undefined) {
+        return res.status(400).json({
+          error: `Unknown platform "${targetPlatform}". Supported: ${Object.keys(PLATFORM_NAME_TO_IGDB_ID).join(", ")}`,
+        });
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const userId = (req as any).user.id;
 
-      // 1. Search IGDB for the title
-      const igdbResults = await igdbClient.searchGames(title, 1);
+      // 1. Search IGDB for the title (filtered by platform if supplied)
+      const igdbResults = await igdbClient.searchGames(title, 1, platformId);
       if (igdbResults.length === 0) {
-        return res.status(404).json({ error: "No game found on IGDB for this title" });
+        return res.status(404).json({
+          error: targetPlatform
+            ? `No game found on IGDB for "${title}" on ${targetPlatform}`
+            : "No game found on IGDB for this title",
+        });
       }
 
       const match = igdbResults[0];
@@ -3086,7 +3174,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         title: formattedMatch.title,
         igdbId: formattedMatch.igdbId,
         status: "wanted", // Default status for quick add
-        platform: "PC", // Default platform, user can change later
+        targetPlatform,
         platforms: formattedMatch.platforms,
         genres: formattedMatch.genres,
         coverUrl: formattedMatch.coverUrl,
@@ -3116,6 +3204,158 @@ export async function registerRoutes(app: Express): Promise<Server> {
         "Game quick-added from matching"
       );
       res.status(201).json(game);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Retro fork: bulk variant of match-and-add. Accepts up to 200 items per
+  // call, each `{title, platform?, status?}`. Used for:
+  //   - importing existing libraries (status="owned")
+  //   - quickly bulk-adding wantlists per platform (status defaults to "wanted")
+  // Returns per-item results so partial failures don't block the rest. The
+  // IGDB client already serialises requests with a ~300ms gap, so we don't
+  // need an explicit per-loop sleep.
+  app.post("/api/games/bulk-match-and-add", async (req, res, next) => {
+    try {
+      const userId = req.user!.id;
+      const items = req.body?.items;
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: "Body must include a non-empty `items` array" });
+      }
+      if (items.length > 200) {
+        return res
+          .status(400)
+          .json({ error: `Too many items (got ${items.length}, max 200 per request)` });
+      }
+
+      type ItemResult = {
+        title: string;
+        platform: string | null;
+        status: "added" | "already_in_collection" | "no_match" | "error" | "invalid";
+        gameId?: string;
+        igdbId?: number;
+        error?: string;
+      };
+
+      // Pre-fetch the user's existing games once to detect duplicates without N round-trips.
+      const userGames = await storage.getUserGames(userId, true);
+      const existingByIgdb = new Map<number, string>();
+      const existingByTitle = new Map<string, string>();
+      for (const g of userGames) {
+        if (g.igdbId != null) existingByIgdb.set(g.igdbId, g.id);
+        existingByTitle.set(g.title.toLowerCase(), g.id);
+      }
+
+      const results: ItemResult[] = [];
+      const VALID_STATUSES = new Set(["wanted", "owned", "completed", "downloading"]);
+
+      for (const raw of items) {
+        const title = typeof raw?.title === "string" ? raw.title.trim() : "";
+        const platformRaw = typeof raw?.platform === "string" ? raw.platform.trim() : "";
+        const platform = platformRaw.length > 0 ? platformRaw : null;
+        const wantStatus = typeof raw?.status === "string" ? raw.status : "wanted";
+
+        if (!title) {
+          results.push({
+            title: title || "(empty)",
+            platform,
+            status: "invalid",
+            error: "Title is required",
+          });
+          continue;
+        }
+        if (!VALID_STATUSES.has(wantStatus)) {
+          results.push({
+            title,
+            platform,
+            status: "invalid",
+            error: `Invalid status "${wantStatus}"`,
+          });
+          continue;
+        }
+        const platformId = getIgdbPlatformId(platform);
+        if (platform && platformId === undefined) {
+          results.push({
+            title,
+            platform,
+            status: "invalid",
+            error: `Unknown platform "${platform}"`,
+          });
+          continue;
+        }
+
+        try {
+          const igdbResults = await igdbClient.searchGames(title, 1, platformId);
+          if (igdbResults.length === 0) {
+            results.push({ title, platform, status: "no_match" });
+            continue;
+          }
+          const match = igdbResults[0];
+          const formatted = igdbClient.formatGameData(match);
+          const igdbId = typeof formatted.igdbId === "number" ? formatted.igdbId : null;
+
+          // Duplicate detection: prefer igdbId match, fall back to case-insensitive title.
+          const existingId =
+            (igdbId != null ? existingByIgdb.get(igdbId) : undefined) ??
+            existingByTitle.get(String(formatted.title).toLowerCase());
+          if (existingId) {
+            results.push({
+              title,
+              platform,
+              status: "already_in_collection",
+              gameId: existingId,
+              igdbId: igdbId ?? undefined,
+            });
+            continue;
+          }
+
+          const gameData = insertGameSchema.parse({
+            userId,
+            title: formatted.title,
+            igdbId,
+            status: wantStatus,
+            targetPlatform: platform,
+            platforms: formatted.platforms,
+            genres: formatted.genres,
+            coverUrl: formatted.coverUrl,
+            releaseDate: formatted.releaseDate,
+            summary: formatted.summary,
+            publishers: formatted.publishers,
+            developers: formatted.developers,
+            screenshots: formatted.screenshots,
+            rating: formatted.rating,
+          });
+          const created = await storage.addGame(gameData);
+
+          // Update local dedup maps so the rest of the batch sees this insert.
+          if (created.igdbId != null) existingByIgdb.set(created.igdbId, created.id);
+          existingByTitle.set(created.title.toLowerCase(), created.id);
+
+          results.push({
+            title,
+            platform,
+            status: "added",
+            gameId: created.id,
+            igdbId: created.igdbId ?? undefined,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          routesLogger.warn({ title, platform, err: message }, "bulk-match-and-add row failed");
+          results.push({ title, platform, status: "error", error: message });
+        }
+      }
+
+      const summary = {
+        total: results.length,
+        added: results.filter((r) => r.status === "added").length,
+        already_in_collection: results.filter((r) => r.status === "already_in_collection").length,
+        no_match: results.filter((r) => r.status === "no_match").length,
+        invalid: results.filter((r) => r.status === "invalid").length,
+        error: results.filter((r) => r.status === "error").length,
+      };
+      routesLogger.info({ userId, ...summary }, "bulk-match-and-add complete");
+      res.status(207).json({ summary, results });
     } catch (error) {
       next(error);
     }

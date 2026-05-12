@@ -149,6 +149,15 @@ const GameCard = ({
         <DownloadIndicator summary={downloadSummary} />
         <div className="absolute top-2 right-2 flex flex-col gap-1">
           {!isDiscovery && game.status && <StatusBadge status={game.status} />}
+          {/* Retro fork: per-game target platform indicator */}
+          {!isDiscovery && game.targetPlatform && (
+            <Badge
+              variant="outline"
+              className="text-xs bg-slate-900/80 border-slate-500 text-slate-100"
+            >
+              {game.targetPlatform}
+            </Badge>
+          )}
           {game.earlyAccess && (
             <Badge className="text-xs bg-amber-500 border-amber-600 text-white">Early Access</Badge>
           )}

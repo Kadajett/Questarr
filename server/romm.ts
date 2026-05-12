@@ -315,10 +315,15 @@ class RommClient {
   }
 
   async triggerScan(cfg: RommConfig, platformSlug?: string): Promise<boolean> {
+    // RomM v4 renamed `/api/tasks/run/scan` to `/api/tasks/run/scan_library`.
+    // The body shape (optional `platforms` array) is unchanged.
     const body = platformSlug ? { platforms: [platformSlug] } : {};
-    const res = await this.request<{ task_id?: string }>(cfg, "POST", "/api/tasks/run/scan", {
-      body,
-    });
+    const res = await this.request<{ task_id?: string }>(
+      cfg,
+      "POST",
+      "/api/tasks/run/scan_library",
+      { body }
+    );
     return res !== null;
   }
 }

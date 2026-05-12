@@ -1152,6 +1152,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // Retro fork: manually trigger the auto-search cron (resets lastAutoSearch
+  // for the user, kicks the sweep on the next tick — or in-process, depending
+  // on the `now` flag). Useful for "I just changed an indexer / added games
+  // and want results NOW" without restarting the pod.
+  // POST /api/cron/auto-search?now=true
+  app.post(
+    "/api/cron/auto-search",
+    sensitiveEndpointLimiter,
+    async (req: Request, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const now = String(req.query.now ?? "true") === "true";
+
+        // Reset our own lastAutoSearch so the next sweep treats us as due.
+        await storage.updateUserSettings(userId, { lastAutoSearch: null });
+
+        if (!now) {
+          return res.json({
+            ok: true,
+            message: "lastAutoSearch reset; next cron tick (within 60min) will pick this up",
+          });
+        }
+
+        // Run the sweep in-process so the response can include the result count.
+        const { checkAutoSearch } = await import("./cron.js");
+        const startedAt = Date.now();
+        await checkAutoSearch();
+        const tookMs = Date.now() - startedAt;
+        const settings = await storage.getUserSettings(userId);
+        return res.json({
+          ok: true,
+          message: "auto-search sweep complete",
+          tookMs,
+          lastAutoSearch: settings?.lastAutoSearch ?? null,
+        });
+      } catch (error) {
+        routesLogger.error({ error }, "manual auto-search trigger failed");
+        res.status(500).json({ error: "Failed to trigger auto-search" });
+      }
+    }
+  );
+
   // Retro fork: enumerate the platforms the fork knows about (canonical name +
   // IGDB id). The frontend uses this to populate the "platform" dropdown in
   // the add-game modal and library filter.

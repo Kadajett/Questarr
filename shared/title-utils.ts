@@ -285,6 +285,46 @@ export type CanonicalPlatform = (typeof CANONICAL_PLATFORMS)[number];
  * matches both releases explicitly detected as "PC" and releases with no detected platform.
  * All non-PC platforms require an explicit detected platform match.
  */
+// Retro fork: alias map from IGDB-canonical platform names (the strings stored
+// in `games.target_platform` and exposed via /api/platforms) to the short codes
+// emitted by parseReleaseMetadata's PLATFORM_PATTERNS. Without this, a
+// targetPlatform of "PlayStation" never matches a release detected as "PS1".
+//
+// One IGDB name can map to multiple release codes (e.g. "Xbox" covers both
+// Xbox and Xbox Series). Empty/missing entry = falls back to direct string
+// equality so callers passing the upstream short codes still work.
+const IGDB_PLATFORM_TO_RELEASE_CODES: Readonly<Record<string, string[]>> = {
+  PC: ["PC"],
+  PlayStation: ["PS1"],
+  "PlayStation 2": ["PS2"],
+  "PlayStation 3": ["PS3"],
+  "PlayStation 4": ["PS4"],
+  "PlayStation 5": ["PS5"],
+  "PlayStation Portable": ["PSP"],
+  "PlayStation Vita": ["PSVita"],
+  SNES: ["SNES"],
+  NES: ["NES"],
+  "Nintendo 64": ["N64"],
+  GameCube: ["GameCube"],
+  Wii: ["Wii"],
+  "Wii U": ["Wii U"],
+  "Nintendo Switch": ["Switch"],
+  "Game Boy": ["GB"],
+  "Game Boy Color": ["GBC"],
+  "Game Boy Advance": ["GBA"],
+  "Nintendo DS": ["NDS"],
+  "Nintendo 3DS": ["3DS"],
+  Genesis: ["Mega Drive"],
+  "Master System": ["Master System"],
+  Dreamcast: ["Dreamcast"],
+  Xbox: ["Xbox", "Xbox Series"],
+  "Xbox 360": ["Xbox"],
+  "Xbox One": ["Xbox", "Xbox Series"],
+  "Xbox Series X": ["Xbox Series"],
+  "Neo Geo": ["Neo Geo"],
+  Atari2600: ["Atari 2600"],
+};
+
 export function matchesPlatformFilter(
   releasePlatform: string | undefined,
   preferredPlatform: string
@@ -296,6 +336,14 @@ export function matchesPlatformFilter(
   // Users who select "Xbox" should not miss Xbox Series titles.
   if (preferredPlatform === "Xbox") {
     return releasePlatform === "Xbox" || releasePlatform === "Xbox Series";
+  }
+  // Retro fork: try IGDB-canonical → release-code translation first so
+  // targetPlatform='PlayStation' matches releases detected as 'PS1' etc.
+  // Falls back to direct equality to preserve upstream behaviour for
+  // callers that already pass short codes.
+  const aliases = IGDB_PLATFORM_TO_RELEASE_CODES[preferredPlatform];
+  if (aliases) {
+    return !!releasePlatform && aliases.includes(releasePlatform);
   }
   return releasePlatform === preferredPlatform;
 }

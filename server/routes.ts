@@ -1273,19 +1273,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // POST /api/romm/rename-library?dryRun=true|false
-  // Walk the configured RomM library and rename any rom files whose basename
-  // would change under cleanRomFilename (strips Cocorico romset prefixes,
-  // hack/translation tags, etc.) so RomM's metadata scrapers can match them.
-  // Triggers a per-platform RomM scan when files actually move.
+  // POST /api/romm/rename-library?platform=<slug>&dryRun=true|false
+  //
+  // Walk the configured RomM library (scoped to ?platform=<slug>) and rename
+  // any rom files whose basename would change under cleanRomFilename (strips
+  // Cocorico romset prefixes, hack/translation tags, etc.) so RomM's
+  // metadata scrapers can match them. Triggers a per-platform RomM scan when
+  // files actually move.
+  //
+  // Retro fork: ?platform is REQUIRED to prevent accidentally rewriting a
+  // curated multi-thousand-rom library when only a single platform was
+  // intended (this almost happened during dev — in-flight rename of the
+  // 31 PSX Cocorico rips started iterating all 8200+ ROMs across every
+  // platform). Pass ?platform=all to opt into the global scope explicitly.
   app.post(
     "/api/romm/rename-library",
     sensitiveEndpointLimiter,
     async (req: Request, res: Response) => {
       try {
         const dryRun = String(req.query.dryRun ?? "false") === "true";
+        const platform = typeof req.query.platform === "string" ? req.query.platform : "";
+        if (!platform) {
+          return res.status(400).json({
+            error:
+              "?platform=<slug> is required (use ?platform=all to opt into rewriting every platform)",
+          });
+        }
         const { renameRommLibraryFiles } = await import("./romm-transfer.js");
-        const result = await renameRommLibraryFiles({ dryRun });
+        const result = await renameRommLibraryFiles({ dryRun, platform });
         res.json(result);
       } catch (error) {
         routesLogger.error({ error }, "RomM library rename failed");

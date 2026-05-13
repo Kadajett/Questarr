@@ -276,7 +276,7 @@ export interface RenameLibraryResult {
  * collisions silently (logs at warn) rather than overwriting.
  */
 export async function renameRommLibraryFiles(
-  options: { dryRun?: boolean } = {}
+  options: { dryRun?: boolean; platform?: string } = {}
 ): Promise<RenameLibraryResult> {
   const result: RenameLibraryResult = {
     scanned: 0,
@@ -304,11 +304,25 @@ export async function renameRommLibraryFiles(
     return result;
   }
 
+  // Retro fork: caller MUST scope the rename to a specific platform slug
+  // (or pass "all" to opt into the global scope). The server-side route
+  // enforces this; we apply the filter here as defense in depth so any
+  // future internal caller has to be explicit too.
+  const platformFilter = options.platform === "all" ? null : options.platform;
+  if (!platformFilter && options.platform !== "all") {
+    result.errors.push({
+      path: "<options>",
+      error: "renameRommLibraryFiles requires options.platform — pass a slug or 'all'",
+    });
+    return result;
+  }
+
   const platformsTouched = new Set<string>();
 
   for (const pd of platformDirs) {
     if (!pd.isDirectory()) continue;
     const slug = String(pd.name);
+    if (platformFilter && slug !== platformFilter) continue;
     const platformDir = path.join(cfg.libraryPath, slug);
     let entries: import("node:fs").Dirent[];
     try {
